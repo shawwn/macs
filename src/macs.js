@@ -72,8 +72,8 @@ function el_init(el) {
   // ns('el.P');
   el.GCTYPEBITS = 3
 
-  el.EMACS_INT_MAX = ~(1<<31);
-  el.EMACS_INT_WIDTH = 31;
+  el.EMACS_INT_WIDTH = 28;
+  el.EMACS_INT_MAX = ((1<<el.EMACS_INT_WIDTH)-1);
 
   /***** Select the tagging scheme.  *****/
 /* The following option controls the tagging scheme:
@@ -102,17 +102,32 @@ function el_init(el) {
     /* Number of bits in a Lisp fixnum value, not counting the tag.  */
     el.FIXNUM_BITS = el.VALBITS + 1;
 
-    el.Lisp_Bits = {GCALIGNMENT: el.GCALIGNMENT,
+    el.Lisp_Bits = {
+      GCALIGNMENT: el.GCALIGNMENT,
       VALBITS: el.VALBITS,
       INTTYPEBITS: el.INTTYPEBITS,
-      FIXNUMBITS: el.FIXNUMBITS}
+      FIXNUM_BIS: el.FIXNUM_BIS
+    }
+
+
+/* Define the fundamental Lisp data structures.  */
+
+/* This is the set of Lisp data types.  If you want to define a new
+   data type, read the comments after Lisp_Fwd_Type definition
+   below.  */
+
+/* Lisp integers use 2 tags, to give them one extra bit, thus
+   extending their range from, e.g., -2^28..2^28-1 to -2^29..2^29-1.  */
+  el.INTMASK = ((el.EMACS_INT_MAX >>> (el.INTTYPEBITS - 1)) | 0x80000000) >>> 0;
+// #define case_Lisp_Int case Lisp_Int0: case Lisp_Int1
+  
     
 /* The maximum value that can be stored in a EMACS_INT, assuming all
    bits other than the type bits contribute to a nonnegative signed value.
    This can be used in #if, e.g., '#if USE_LSB_TAG' below expands to an
    expression involving VAL_MAX.  */
-el.VAL_MAX = (el.EMACS_INT_MAX >> (el.GCTYPEBITS - 1))
-el.VALMASK = (el.env.USE_LSB_TAG ? - (1 << el.GCTYPEBITS) : el.VAL_MAX)
+el.VAL_MAX = (el.EMACS_INT_MAX >>> (el.GCTYPEBITS - 1))
+el.VALMASK = ((el.env.USE_LSB_TAG ? - (1 << el.GCTYPEBITS) : el.VAL_MAX) | 0x80000000) >>> 0;
 
 
 el.Lisp_Type =
@@ -172,6 +187,7 @@ Object.assign(el, el.Lisp_Type);
       process.exit(1);
     }
   }
+  el.eassume = el.eassert;
     
 
   el.INTERN = function intern(name) {
@@ -353,8 +369,9 @@ function with_init(el) {
         if (el.env.USE_LSB_TAG) {
           return el.lisp_h_XTYPE (a);
         } else {
-          let /*EMACS_UINT*/ i = XLI (a);
-          return el.env.USE_LSB_TAG ? i & ~el.VALMASK : i >> el.VALBITS;
+          let /*EMACS_UINT*/ i = el.XLI (a);
+          //return el.env.USE_LSB_TAG ? (i & ~el.VALMASK) : ((i&~el.VALMASK) >>> el.FIXNUM_BITS);
+          return el.env.USE_LSB_TAG ? (i & ~el.VALMASK) : ((i < 0) ? ~i : i) >>> el.FIXNUM_BITS;
         }
       }
 
@@ -372,8 +389,13 @@ function with_init(el) {
         if (el.env.USE_LSB_TAG) {
           return el.lisp_h_XUNTAG (a, type);
         } else {
-          let /*intptr_t*/ i = el.env.USE_LSB_TAG ? el.XLI (a) - type : el.XLI (a) & el.VALMASK;
-          return /*(void *)*/ i;
+          // let /*intptr_t*/ i = el.env.USE_LSB_TAG ? el.XLI (a) - type : el.XLI (a) & el.VALMASK;
+          // return /*(void *)*/ i;
+
+          // return (a < 0 ? ~a : a) 
+          let mask = ((1 << el.FIXNUM_BITS)-1);
+          return (a < 0) ? (a | ~mask) - 1 : (a & mask)
+
           // if (type === el.Lisp_Symbol) {
           //   return el.lispsym[i];
           // } else {
@@ -388,10 +410,11 @@ function with_init(el) {
          and zero-extend otherwise (that’s a bit faster here).
          Sign extension matters only when EMACS_INT is wider than a pointer.  */
       el.TAG_PTR = function TAG_PTR (tag, ptr) {
+        let n = (tag << el.FIXNUM_BITS);
         return el.env.USE_LSB_TAG 
          ? /*(intptr_t)*/ (ptr) + (tag) 
-         : /*(EMACS_INT)*/ ((/*(EMACS_UINT)*/ (tag) << el.VALBITS) + /*(uintptr_t)*/ (ptr));
-
+         // : /*(EMACS_INT)*/ ((/*(EMACS_UINT)*/ n) + /*(uintptr_t)*/ (ptr));
+         : (ptr < 0) ? -(~ptr | n) : (ptr | n)
       }
 
     
@@ -597,34 +620,64 @@ if (!el.env.USE_LSB_TAG) {
    bits of N.  */
 // INLINE Lisp_Object
 el.make_number = function make_number (/*EMACS_INT*/ n)
+// {
+//   let /*EMACS_INT*/ int0 = el.Lisp_Int0;
+//   if (el.env.USE_LSB_TAG)
+//     {
+//       let /*EMACS_UINT*/ u = (n >= 0) ? n : ~(-n);
+//       n = u << el.INTTYPEBITS;
+//       n += int0;
+//     }
+//   else
+//     {
+//       let /*EMACS_UINT*/ u = (n >= 0) ? n : ~(-n);
+//       // u &= el.INTMASK;
+//       u += (int0 << el.VALBITS);
+//       u = (n >= 0) ? u : ~(-u);
+//       n = u;
+//     }
+//   return el.XIL (n);
+// }
+
+// {
+//   if (el.env.USE_LSB_TAG)
+//     {
+//       let /*EMACS_UINT*/ u = n >>> 0;
+//       n = u << INTTYPEBITS;
+//       n += el.Lisp_Int0;
+//     }
+//   else
+//     {
+//       // n &= el.INTMASK;
+//       // n += (el.Lisp_Int0 << VALBITS);
+//       return el.VALMASK & (n >>> 0) | (el.Lisp_Int0 << el.FIXNUM_BITS)
+//     }
+//   return XIL (n);
+// }
+
 {
-  let /*EMACS_INT*/ int0 = el.Lisp_Int0;
-  if (el.env.USE_LSB_TAG)
-    {
-      let /*EMACS_UINT*/ u = n;
-      n = u << el.INTTYPEBITS;
-      n += int0;
-    }
-  else
-    {
-      n &= el.INTMASK;
-      n += (int0 << el.VALBITS);
-    }
-  return el.XIL (n);
+  return el.TAG_PTR(el.Lisp_Int0, n);
 }
+
+// (el.Lisp_Int0 << el.VALBITS)
+
+el.iArr = new Int32Array([0]);
 
 /* Extract A's value as a signed integer.  */
 // INLINE EMACS_INT
 el.XINT = function XINT (/*Lisp_Object*/ a)
 {
-  let /*EMACS_INT*/ i = el.XLI (a);
-  if (! el.env.USE_LSB_TAG)
-    {
-      /*EMACS_UINT*/ u = i;
-      i = u << el.INTTYPEBITS;
-    }
-  return i >> el.INTTYPEBITS;
+  return el.XUNTAG(a, el.Lisp_int0);
 }
+// {
+//   let /*EMACS_INT*/ i = el.XLI (a);
+//   if (! el.env.USE_LSB_TAG)
+//     {
+//       el.iArr[0] = i - (el.Lisp_Int0 << el.VALBITS);
+//       return el.iArr[0];
+//     }
+//   return i >> el.INTTYPEBITS;
+// }
 
 /* Like XINT (A), but may be faster.  A must be nonnegative.
    If ! USE_LSB_TAG, this takes advantage of the fact that Lisp
@@ -633,8 +686,8 @@ el.XINT = function XINT (/*Lisp_Object*/ a)
 el.XFASTINT = function XFASTINT (/*Lisp_Object*/ a)
 {
   let /*EMACS_INT*/ int0 = el.Lisp_Int0;
-  let /*EMACS_INT*/ n = el.env.USE_LSB_TAG ? el.XINT (a) : el.XLI (a) - (int0 << el.VALBITS);
-  el.eassume (0 <= n);
+  let /*EMACS_INT*/ n = el.env.USE_LSB_TAG ? el.XINT (a) : el.XLI (a) - (int0 << el.FIXNUM_BITS);
+  el.eassume (() => 0 <= n);
   return n;
 }
 
@@ -1349,7 +1402,7 @@ INIT must be an integer that represents a character.  `},
     }
 
   return val;
-}
+});
 
 
 
