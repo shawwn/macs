@@ -6,7 +6,9 @@
   "author": "Shawn Presser <shawnpresser@gmail.com>",
   "license": "MIT",
   "dependencies": {
-    "mout": "^1.1.0"
+    "change-case": "^3.0.1",
+    "mout": "^1.1.0",
+    "node-c-parser": "^1.0.11"
   },
   "devDependencies": {
     "babel-cli": "^6.26.0",
