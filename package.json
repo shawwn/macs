@@ -1,0 +1,8 @@
+{
+  "name": "macs",
+  "version": "0.0.0",
+  "main": "index.js",
+  "repository": "https://github.com/shawwn/macs",
+  "author": "Shawn Presser <shawnpresser@gmail.com>",
+  "license": "MIT"
+}
