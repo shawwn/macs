@@ -7,5 +7,17 @@
   "license": "MIT",
   "dependencies": {
     "mout": "^1.1.0"
+  },
+  "devDependencies": {
+    "babel-cli": "^6.26.0",
+    "babel-core": "^6.26.0",
+    "babel-preset-env": "^1.6.1",
+    "ncp": "^2.0.0"
+  },
+  "scripts": {
+    "build": "babel src -d lib && ncp src/builtins lib/builtins",
+    "prepublish": "yarn build",
+    "precommit": "npm run lint && lint-staged",
+    "lint": "eslint ."
   }
 }
