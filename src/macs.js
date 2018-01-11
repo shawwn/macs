@@ -2,6 +2,7 @@ let mout = require('mout')
 let Case = require('change-case');
 let G = mout.lang.GLOBAL;
 let ns = (name, G=mout.lang.GLOBAL) => { mout.object.namespace(G, name); return mout.object.get(G, name); }
+var MutableBuffer = require('mutable-buffer');
 
 let el_globals = require('./globals');
 
@@ -74,6 +75,13 @@ function el_init(el) {
 
   el.EMACS_INT_WIDTH = 28;
   el.EMACS_INT_MAX = ((1<<el.EMACS_INT_WIDTH)-1);
+
+  el.idiv = function (a, b) {
+    a -= a % b;
+    return a / b
+  }
+
+  el.PTRDIFF_MAX = el.idiv((-1 >>> 0), 2);
 
   /***** Select the tagging scheme.  *****/
 /* The following option controls the tagging scheme:
@@ -252,6 +260,41 @@ Object.assign(el, el.Lisp_Type);
 
 function with_init(el) {
   with (el) {
+
+/* Header of vector-like objects.  This documents the layout constraints on
+   vectors and pseudovectors (objects of PVEC_xxx subtype).  It also prevents
+   compilers from being fooled by Emacs's type punning: XSETPSEUDOVECTOR
+   and PSEUDOVECTORP cast their pointers to struct vectorlike_header *,
+   because when two such pointers potentially alias, a compiler won't
+   incorrectly reorder loads and stores to their size fields.  See
+   Bug#8546.  */
+// struct vectorlike_header
+  {
+    /* The only field contains various pieces of information:
+       - The MSB (ARRAY_MARK_FLAG) holds the gcmarkbit.
+       - The next bit (PSEUDOVECTOR_FLAG) indicates whether this is a plain
+         vector (0) or a pseudovector (1).
+       - If PSEUDOVECTOR_FLAG is 0, the rest holds the size (number
+         of slots) of the vector.
+       - If PSEUDOVECTOR_FLAG is 1, the rest is subdivided into three fields:
+	 - a) pseudovector subtype held in PVEC_TYPE_MASK field;
+	 - b) number of Lisp_Objects slots at the beginning of the object
+	   held in PSEUDOVECTOR_SIZE_MASK field.  These objects are always
+	   traced by the GC;
+	 - c) size of the rest fields held in PSEUDOVECTOR_REST_MASK and
+	   measured in word_size units.  Rest fields may also include
+	   Lisp_Objects, but these objects usually needs some special treatment
+	   during GC.
+	 There are some exceptions.  For PVEC_FREE, b) is always zero.  For
+	 PVEC_BOOL_VECTOR and PVEC_SUBR, both b) and c) are always zero.
+	 Current layout limits the pseudovectors to 63 PVEC_xxx subtypes,
+	 4095 Lisp_Objects in GC-ed area and 4095 word-sized other slots.  */
+    // ptrdiff_t size;
+  };
+    
+
+
+
     if (el.env.DEFINE_KEY_OPS_AS_MACROS) {
       el.XLI = function XLI (o) { return el.lisp_h_XLI (o) }
       el.XIL = function XIL (i) { return el.lisp_h_XIL (i) }
@@ -366,6 +409,9 @@ function with_init(el) {
       //INLINE enum Lisp_Type
       el.XTYPE = function XTYPE (/*Lisp_Object*/ a)
       {
+        if (typeof a === 'object' && a.type !== null) {
+          return a.type;
+        }
         if (el.env.USE_LSB_TAG) {
           return el.lisp_h_XTYPE (a);
         } else {
@@ -386,6 +432,9 @@ function with_init(el) {
       //INLINE void *
       el.XUNTAG = function XUNTAG (/*Lisp_Object*/ a, /*int*/ type)
       {
+        if (typeof a === 'object' && a.index !== null) {
+          return a.index;
+        }
         if (el.env.USE_LSB_TAG) {
           return el.lisp_h_XUNTAG (a, type);
         } else {
@@ -432,14 +481,29 @@ function with_init(el) {
       // el.lispsym = el.heap[el.Lisp_Symbol];
       el.lispsym = 0;
 
+
+el.deref = function ref(ptr) {
+  if (typeof ptr === "number") {
+    return el.Lisp_Object(ptr);
+  } else {
+    return ptr;
+  }
+}
+
 el.Lisp_Object = function Lisp_Object(ptr) {
   let type = el.XTYPE(ptr);
   let tag = el.XUNTAG(ptr, type);
+
   // eassert(() => el.heap[ptr]);
   el.eassert(() => tag < el.heap[type].length);
   let obj = el.heap[type][tag];
   if (obj == null) {
     el.heap[type][tag] = obj = {}
+    obj.type = type;
+    obj.index = tag;
+    if (el.VECTORLIKEP(obj)) {
+      obj.header = {size: 0}
+    }
   }
   // return el.heap[type][tag];
   // return el.heap[ptr];
@@ -449,12 +513,37 @@ el.Lisp_Object = function Lisp_Object(ptr) {
 
 /* Construct a Lisp_Object from a value or address.  */
 
+el.type_counts = {}
+
+el.next_index = function next_index(type, count = 1) {
+  let i = el.type_counts[type]||0;
+  if (type === el.Lisp_Symbol && i < el.iQ_MAX) {
+    i = el.iQ_MAX;
+  }
+  el.type_counts[type] = i + count;
+  return i;
+}
+
 // INLINE Lisp_Object
-el.make_lisp_ptr = function make_lisp_ptr (/*void **/ ptr, /*enum Lisp_Type*/ type)
+el.make_lisp_ptr = function make_lisp_ptr (/*void **/ offset, /*enum Lisp_Type*/ type)
 {
-  let /*Lisp_Object*/ a = el.XIL (el.TAG_PTR (type, ptr));
-  el.eassert (() => (el.XTYPE (a) === type && el.XUNTAG (a, type) === ptr));
+  let ptr;
+  if (offset == null) {
+    el.eassert (() => type != null);
+    offset = el.next_index(type);
+    ptr = el.TAG_PTR (type, offset);
+  } else {
+    offset = el.XUNTAG(offset, type);
+  }
+  let /*Lisp_Object*/ a = el.XIL (el.TAG_PTR (type, offset));
+  el.eassert (() => (el.XTYPE (a) === type));
+  // console.log({a, tag: el.XUNTAG (a, type), ptr, offset, type})
+  el.eassert (() => el.XUNTAG (a, type) === offset);
   return a;
+}
+
+el.lisp_obj = function lisp_obj ( offset, type ) {
+  return el.Lisp_Object(el.make_lisp_ptr(offset, type))
 }
 
 
@@ -609,6 +698,77 @@ if (! el.env.GC_MALLOC_CHECK) {
 
 
 
+// /* In the size word of a vector, this bit means the vector has been marked.  */
+
+// DEFINE_GDB_SYMBOL_BEGIN (ptrdiff_t, ARRAY_MARK_FLAG)
+// # define ARRAY_MARK_FLAG PTRDIFF_MIN
+// DEFINE_GDB_SYMBOL_END (ARRAY_MARK_FLAG)
+el.ARRAY_MARK_FLAG = el.PTRDIFF_MIN;
+
+// /* In the size word of a struct Lisp_Vector, this bit means it's really
+//    some other vector-like object.  */
+// DEFINE_GDB_SYMBOL_BEGIN (ptrdiff_t, PSEUDOVECTOR_FLAG)
+// # define PSEUDOVECTOR_FLAG (PTRDIFF_MAX - PTRDIFF_MAX / 2)
+// DEFINE_GDB_SYMBOL_END (PSEUDOVECTOR_FLAG)
+el.PSEUDOVECTOR_FLAG = (el.PTRDIFF_MAX - el.idiv(el.PTRDIFF_MAX, 2));
+
+/* In a pseudovector, the size field actually contains a word with one
+   PSEUDOVECTOR_FLAG bit set, and one of the following values extracted
+   with PVEC_TYPE_MASK to indicate the actual type.  */
+var n = 0;
+el.pvec_type =
+{
+  PVEC_NORMAL_VECTOR: n++,
+  PVEC_FREE: n++,
+  PVEC_PROCESS: n++,
+  PVEC_FRAME: n++,
+  PVEC_WINDOW: n++,
+  PVEC_BOOL_VECTOR: n++,
+  PVEC_BUFFER: n++,
+  PVEC_HASH_TABLE: n++,
+  PVEC_TERMINAL: n++,
+  PVEC_WINDOW_CONFIGURATION: n++,
+  PVEC_SUBR: n++,
+  PVEC_OTHER: n++,            /* Should never be visible to Elisp code.  */
+  PVEC_XWIDGET: n++,
+  PVEC_XWIDGET_VIEW: n++,
+  PVEC_THREAD: n++,
+  PVEC_MUTEX: n++,
+  PVEC_CONDVAR: n++,
+
+  /* These should be last, check internal_equal to see why.  */
+  PVEC_COMPILED: n++,
+  PVEC_CHAR_TABLE: n++,
+  PVEC_SUB_CHAR_TABLE: n++,
+  PVEC_RECORD: n++,
+  PVEC_FONT: n++ /* Should be last because it's used for range checking.  */
+};
+Object.assign(el, el.pvec_type);
+
+el.More_Lisp_Bits = {};
+    /* For convenience, we also store the number of elements in these bits.
+       Note that this size is not necessarily the memory-footprint size, but
+       only the number of Lisp_Object fields (that need to be traced by GC).
+       The distinction is used, e.g., by Lisp_Process, which places extra
+       non-Lisp_Object fields at the end of the structure.  */
+    el.More_Lisp_Bits.PSEUDOVECTOR_SIZE_BITS = 12,
+    el.More_Lisp_Bits.PSEUDOVECTOR_SIZE_MASK = (1 << el.More_Lisp_Bits.PSEUDOVECTOR_SIZE_BITS) - 1,
+
+    /* To calculate the memory footprint of the pseudovector, it's useful
+       to store the size of non-Lisp area in word_size units here.  */
+    el.More_Lisp_Bits.PSEUDOVECTOR_REST_BITS = 12,
+    el.More_Lisp_Bits.PSEUDOVECTOR_REST_MASK = (((1 << el.More_Lisp_Bits.PSEUDOVECTOR_REST_BITS) - 1)
+			      << el.More_Lisp_Bits.PSEUDOVECTOR_SIZE_BITS),
+
+    /* Used to extract pseudovector subtype information.  */
+    el.More_Lisp_Bits.PSEUDOVECTOR_AREA_BITS = el.More_Lisp_Bits.PSEUDOVECTOR_SIZE_BITS + el.More_Lisp_Bits.PSEUDOVECTOR_REST_BITS,
+    el.More_Lisp_Bits.PVEC_TYPE_MASK = 0x3f << el.More_Lisp_Bits.PSEUDOVECTOR_AREA_BITS
+Object.assign(el, el.More_Lisp_Bits);
+
+
+
+
+
 
 if (!el.env.USE_LSB_TAG) {
 
@@ -707,6 +867,347 @@ el.XSETSTRING = function XSETSTRING (a, b) { return ((a) = el.make_lisp_ptr (b, 
 el.XSETSYMBOL = function XSETSYMBOL (a, b) { return ((a) = el.make_lisp_symbol (b)); }
 el.XSETFLOAT = function XSETFLOAT (a, b) { return ((a) = el.make_lisp_ptr (b, el.Lisp_Float)); }
 el.XSETMISC = function XSETMISC (a, b) { return ((a) = el.make_lisp_ptr (b, el.Lisp_Misc)); }
+
+/* Pseudovector types.  */
+
+el.XSETPVECTYPE = function XSETPVECTYPE (v, code) { 
+  if (v == null) {
+    v = el.lisp_obj(null, el.Lisp_Vectorlike);
+  }
+  (el.deref(v).header.size |= el.PSEUDOVECTOR_FLAG | ((code) << el.PSEUDOVECTOR_AREA_BITS));
+  return v;
+}
+
+el.XSETPVECTYPESIZE = function XSETPVECTYPESIZE (v, code, lispsize, restsize) {
+  (el.deref(v).header.size = (el.PSEUDOVECTOR_FLAG			
+		       | ((code) << el.PSEUDOVECTOR_AREA_BITS)	
+		       | ((restsize) << el.PSEUDOVECTOR_SIZE_BITS) 
+		       | (lispsize)))
+    return v;
+}
+
+/* The cast to struct vectorlike_header * avoids aliasing issues.  */
+el.XSETPSEUDOVECTOR = function XSETPSEUDOVECTOR (a, b, code) {
+  return el.XSETTYPED_PSEUDOVECTOR (a, b,					
+			  (el.deref(/*(struct vectorlike_header *)*/	
+			    el.XUNTAG (a, el.Lisp_Vectorlike))	
+			   .size),
+			  code)
+}
+el.XSETTYPED_PSEUDOVECTOR = function XSETTYPED_PSEUDOVECTOR (a, b, size, code) {
+  return (el.XSETVECTOR (a, b),							
+   el.eassert ((size & (el.PSEUDOVECTOR_FLAG | el.PVEC_TYPE_MASK))		
+	    == (el.PSEUDOVECTOR_FLAG | (code << el.PSEUDOVECTOR_AREA_BITS))))
+}
+
+el.XSETWINDOW_CONFIGURATION = function XSETWINDOW_CONFIGURATION (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_WINDOW_CONFIGURATION)); }
+el.XSETPROCESS = function XSETPROCESS (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_PROCESS)); }
+el.XSETWINDOW = function XSETWINDOW (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_WINDOW)); }
+el.XSETTERMINAL = function XSETTERMINAL (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_TERMINAL)); }
+el.XSETSUBR = function XSETSUBR (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_SUBR)); }
+el.XSETCOMPILED = function XSETCOMPILED (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_COMPILED)); }
+el.XSETBUFFER = function XSETBUFFER (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_BUFFER)); }
+el.XSETCHAR_TABLE = function XSETCHAR_TABLE (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_CHAR_TABLE)); }
+el.XSETBOOL_VECTOR = function XSETBOOL_VECTOR (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_BOOL_VECTOR)); }
+el.XSETSUB_CHAR_TABLE = function XSETSUB_CHAR_TABLE (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_SUB_CHAR_TABLE)); }
+el.XSETTHREAD = function XSETTHREAD (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_THREAD)); }
+el.XSETMUTEX = function XSETMUTEX (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_MUTEX)); }
+el.XSETCONDVAR = function XSETCONDVAR (a, b) { return (el.XSETPSEUDOVECTOR (a, b, el.PVEC_CONDVAR)); }
+
+
+
+
+
+
+
+// /* Data type checking.  */
+
+// INLINE bool
+el.NUMBERP = function NUMBERP (/*Lisp_Object*/ x)
+{
+  return el.INTEGERP (x) || el.FLOATP (x);
+}
+// INLINE bool
+el.NATNUMP = function NATNUMP (/*Lisp_Object*/ x)
+{
+  return el.INTEGERP (x) && 0 <= el.XINT (x);
+}
+
+// INLINE bool
+el.RANGED_INTEGERP = function RANGED_INTEGERP (/*intmax_t*/ lo, /*Lisp_Object*/ x, /*intmax_t*/ hi)
+{
+  return el.INTEGERP (x) && lo <= el.XINT (x) && el.XINT (x) <= hi;
+}
+
+// #define TYPE_RANGED_INTEGERP(type, x) \
+//   (INTEGERP (x)			      \
+//    && (TYPE_SIGNED (type) ? TYPE_MINIMUM (type) <= XINT (x) : 0 <= XINT (x)) \
+//    && XINT (x) <= TYPE_MAXIMUM (type))
+
+// INLINE bool
+// AUTOLOADP (Lisp_Object x)
+// {
+//   return CONSP (x) && EQ (Qautoload, XCAR (x));
+// }
+
+
+// /* Test for specific pseudovector types.  */
+
+// INLINE bool
+// WINDOW_CONFIGURATIONP (Lisp_Object a)
+// {
+//   return PSEUDOVECTORP (a, PVEC_WINDOW_CONFIGURATION);
+// }
+
+// INLINE bool
+// COMPILEDP (Lisp_Object a)
+// {
+//   return PSEUDOVECTORP (a, PVEC_COMPILED);
+// }
+
+// INLINE bool
+// FRAMEP (Lisp_Object a)
+// {
+//   return PSEUDOVECTORP (a, PVEC_FRAME);
+// }
+
+// INLINE bool
+// RECORDP (Lisp_Object a)
+// {
+//   return PSEUDOVECTORP (a, PVEC_RECORD);
+// }
+
+// INLINE void
+// CHECK_RECORD (Lisp_Object x)
+// {
+//   CHECK_TYPE (RECORDP (x), Qrecordp, x);
+// }
+
+// /* Test for image (image . spec)  */
+// INLINE bool
+// IMAGEP (Lisp_Object x)
+// {
+//   return CONSP (x) && EQ (XCAR (x), Qimage);
+// }
+
+// /* Array types.  */
+// INLINE bool
+// ARRAYP (Lisp_Object x)
+// {
+//   return VECTORP (x) || STRINGP (x) || CHAR_TABLE_P (x) || BOOL_VECTOR_P (x);
+// }
+// 
+// INLINE void
+// CHECK_LIST (Lisp_Object x)
+// {
+//   CHECK_TYPE (CONSP (x) || NILP (x), Qlistp, x);
+// }
+
+// INLINE void
+// CHECK_LIST_END (Lisp_Object x, Lisp_Object y)
+// {
+//   CHECK_TYPE (NILP (x), Qlistp, y);
+// }
+
+// INLINE void
+// (CHECK_NUMBER) (Lisp_Object x)
+// {
+//   lisp_h_CHECK_NUMBER (x);
+// }
+
+// INLINE void
+// CHECK_STRING_CAR (Lisp_Object x)
+// {
+//   CHECK_TYPE (STRINGP (XCAR (x)), Qstringp, XCAR (x));
+// }
+// /* This is a bit special because we always need size afterwards.  */
+// INLINE ptrdiff_t
+// CHECK_VECTOR_OR_STRING (Lisp_Object x)
+// {
+//   if (VECTORP (x))
+//     return ASIZE (x);
+//   if (STRINGP (x))
+//     return SCHARS (x);
+//   wrong_type_argument (Qarrayp, x);
+// }
+// INLINE void
+// CHECK_ARRAY (Lisp_Object x, Lisp_Object predicate)
+// {
+//   CHECK_TYPE (ARRAYP (x), predicate, x);
+// }
+// INLINE void
+el.CHECK_NATNUM = function CHECK_NATNUM (/*Lisp_Object*/ x)
+{
+  el.CHECK_TYPE (el.NATNUMP (x), el.Qwholenump, x);
+}
+
+// #define CHECK_RANGED_INTEGER(x, lo, hi)					\
+//   do {									\
+//     CHECK_NUMBER (x);							\
+//     if (! ((lo) <= XINT (x) && XINT (x) <= (hi)))			\
+//       args_out_of_range_3						\
+// 	(x,								\
+// 	 make_number ((lo) < 0 && (lo) < MOST_NEGATIVE_FIXNUM		\
+// 		      ? MOST_NEGATIVE_FIXNUM				\
+// 		      : (lo)),						\
+// 	 make_number (min (hi, MOST_POSITIVE_FIXNUM)));			\
+//   } while (false)
+// #define CHECK_TYPE_RANGED_INTEGER(type, x) \
+//   do {									\
+//     if (TYPE_SIGNED (type))						\
+//       CHECK_RANGED_INTEGER (x, TYPE_MINIMUM (type), TYPE_MAXIMUM (type)); \
+//     else								\
+//       CHECK_RANGED_INTEGER (x, 0, TYPE_MAXIMUM (type));			\
+//   } while (false)
+
+// #define CHECK_NUMBER_COERCE_MARKER(x)					\
+//   do {									\
+//     if (MARKERP ((x)))							\
+//       XSETFASTINT (x, marker_position (x));				\
+//     else								\
+//       CHECK_TYPE (INTEGERP (x), Qinteger_or_marker_p, x);		\
+//   } while (false)
+
+// INLINE double
+// XFLOATINT (Lisp_Object n)
+// {
+//   return FLOATP (n) ? XFLOAT_DATA (n) : XINT (n);
+// }
+
+// INLINE void
+// CHECK_NUMBER_OR_FLOAT (Lisp_Object x)
+// {
+//   CHECK_TYPE (NUMBERP (x), Qnumberp, x);
+// }
+
+// #define CHECK_NUMBER_OR_FLOAT_COERCE_MARKER(x)				\
+//   do {									\
+//     if (MARKERP (x))							\
+//       XSETFASTINT (x, marker_position (x));				\
+//     else								\
+//       CHECK_TYPE (NUMBERP (x), Qnumber_or_marker_p, x);			\
+//   } while (false)
+
+// /* Since we can't assign directly to the CAR or CDR fields of a cons
+//    cell, use these when checking that those fields contain numbers.  */
+// INLINE void
+// CHECK_NUMBER_CAR (Lisp_Object x)
+// {
+//   Lisp_Object tmp = XCAR (x);
+//   CHECK_NUMBER (tmp);
+//   XSETCAR (x, tmp);
+// }
+
+// INLINE void
+// CHECK_NUMBER_CDR (Lisp_Object x)
+// {
+//   Lisp_Object tmp = XCDR (x);
+//   CHECK_NUMBER (tmp);
+//   XSETCDR (x, tmp);
+// }
+
+
+
+/* This structure describes a built-in function.
+   It is generated by the DEFUN macro only.
+   defsubr makes it into a Lisp object.  */
+
+// struct Lisp_Subr
+//   {
+//     struct vectorlike_header header;
+//     union {
+//       Lisp_Object (*a0) (void);
+//       Lisp_Object (*a1) (Lisp_Object);
+//       Lisp_Object (*a2) (Lisp_Object, Lisp_Object);
+//       Lisp_Object (*a3) (Lisp_Object, Lisp_Object, Lisp_Object);
+//       Lisp_Object (*a4) (Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object);
+//       Lisp_Object (*a5) (Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object);
+//       Lisp_Object (*a6) (Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object);
+//       Lisp_Object (*a7) (Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object);
+//       Lisp_Object (*a8) (Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object, Lisp_Object);
+//       Lisp_Object (*aUNEVALLED) (Lisp_Object args);
+//       Lisp_Object (*aMANY) (ptrdiff_t, Lisp_Object *);
+//     } function;
+//     short min_args, max_args;
+//     const char *symbol_name;
+//     const char *intspec;
+//     EMACS_INT doc;
+//   };
+
+// INLINE bool
+el.SUBRP = function SUBRP (/*Lisp_Object*/ a)
+{
+  return el.PSEUDOVECTORP (a, el.PVEC_SUBR);
+}
+
+// INLINE struct Lisp_Subr *
+el.XSUBR = function XSUBR (/*Lisp_Object*/ a)
+{
+  el.eassert (() => el.SUBRP (a));
+  return el.XUNTAG (a, el.Lisp_Vectorlike);
+}
+
+
+// static void
+el.CHECK_SUBR = function CHECK_SUBR (/*Lisp_Object*/ x)
+{
+  el.CHECK_TYPE (el.SUBRP (x), el.Qsubrp, x);
+}
+
+
+
+
+/* character code	1st byte   byte sequence
+   --------------	--------   -------------
+        0-7F		00..7F	   0xxxxxxx
+       80-7FF		C2..DF	   110xxxxx 10xxxxxx
+      800-FFFF		E0..EF	   1110xxxx 10xxxxxx 10xxxxxx
+    10000-1FFFFF	F0..F7	   11110xxx 10xxxxxx 10xxxxxx 10xxxxxx
+   200000-3FFF7F	F8	   11111000 1000xxxx 10xxxxxx 10xxxxxx 10xxxxxx
+   3FFF80-3FFFFF	C0..C1	   1100000x 10xxxxxx (for eight-bit-char)
+   400000-...		invalid
+
+   invalid 1st byte	80..BF	   10xxxxxx
+			F9..FF	   11111xxx (xxx != 000)
+*/
+
+/* Maximum character code ((1 << CHARACTERBITS) - 1).  */
+el.MAX_CHAR = 0x3FFFFF
+
+/* Maximum Unicode character code.  */
+el.MAX_UNICODE_CHAR = 0x10FFFF
+
+/* Maximum N-byte character codes.  */
+el.MAX_1_BYTE_CHAR = 0x7F
+el.MAX_2_BYTE_CHAR = 0x7FF
+el.MAX_3_BYTE_CHAR = 0xFFFF
+el.MAX_4_BYTE_CHAR = 0x1FFFFF
+el.MAX_5_BYTE_CHAR = 0x3FFF7F
+
+/* Minimum leading code of multibyte characters.  */
+el.MIN_MULTIBYTE_LEADING_CODE = 0xC0
+/* Maximum leading code of multibyte characters.  */
+el.MAX_MULTIBYTE_LEADING_CODE = 0xF8
+
+
+/* True iff C is an ASCII character.  */
+el.ASCII_CHAR_P = function ASCII_CHAR_P(c) { return (c >>> 0) < 0x80; }
+
+
+/* Nonzero iff X is a character.  */
+el.CHARACTERP = function CHARACTERP(x) {
+  return (el.NATNUMP (x) && el.XFASTINT (x) <= el.MAX_CHAR)
+}
+
+/* Nonzero iff C is valid as a character code.  */
+el.CHAR_VALID_P = function CHAR_VALID_P(c) {
+  return (c >>> 0) <= el.MAX_CHAR;
+}
+
+/* Check if Lisp object X is a character or not.  */
+el.CHECK_CHARACTER = function CHECK_CHARACTER(x) {
+  return el.CHECK_TYPE (el.CHARACTERP (x), el.Qcharacterp, x)
+}
 
 
 
@@ -830,6 +1331,288 @@ el.XSTRING = function XSTRING(/*Lisp_Object*/ a)
   // return el.XUNTAG (a, el.Lisp_String);
   return el.Lisp_Object (a);
 }
+
+/* True if STR is a multibyte string.  */
+// INLINE bool
+el.STRING_MULTIBYTE = function STRING_MULTIBYTE (/*Lisp_Object*/ str)
+{
+  return 0 <= el.XSTRING (str).size_byte;
+}
+
+/* Convenience functions for dealing with Lisp strings.  */
+
+// INLINE unsigned char *
+el.SDATA = function SDATA (/*Lisp_Object*/ string)
+{
+  let str = el.XSTRING (string);
+  if (!str.data) {
+    str.data = new MutableBuffer(/* initialSize, blockSize */);
+    str.size = 0;
+    str.size_byte = -1;
+    str.intervals = null;
+  }
+  return str.data;
+}
+// INLINE char *
+el.SSDATA = function SSDATA (/*Lisp_Object*/ string)
+{
+  // /* Avoid "differ in sign" warnings.  */
+  // return (char *) SDATA (string);
+  return el.SDATA (string);
+}
+// INLINE unsigned char
+el.SREF = function SREF (/*Lisp_Object*/ string, /*ptrdiff_t*/ index)
+{
+  return el.SDATA (string)[index];
+}
+// INLINE void
+el.SSET = function SSET (/*Lisp_Object*/ string, /*ptrdiff_t*/ index, /*unsigned*/ /*char*/ _new)
+{
+  el.SDATA (string)[index] = _new;
+}
+// INLINE ptrdiff_t
+el.SCHARS = function SCHARS (/*Lisp_Object*/ string)
+{
+  return el.XSTRING (string).size;
+}
+
+// #ifdef GC_CHECK_STRING_BYTES
+// extern ptrdiff_t string_bytes (struct Lisp_String *);
+// #endif
+
+// INLINE ptrdiff_t
+el.STRING_BYTES = function STRING_BYTES (/* struct Lisp_String * */ s)
+{
+// #ifdef GC_CHECK_STRING_BYTES
+//   return string_bytes (s);
+// #else
+  return (s.size_byte < 0) ? s.size : s.size_byte;
+// #endif
+}
+
+// INLINE ptrdiff_t
+el.SBYTES = function SBYTES (/*Lisp_Object*/ string)
+{
+  return el.STRING_BYTES (el.XSTRING (string));
+}
+// INLINE void
+el.STRING_SET_CHARS = function STRING_SET_CHARS (/*Lisp_Object*/ string, /*ptrdiff_t*/ newsize)
+{
+  /* This function cannot change the size of data allocated for the
+     string when it was created.  */
+  el.eassert (() => el.STRING_MULTIBYTE (string)
+	   ? newsize <= el.SBYTES (string)
+	   : newsize == el.SCHARS (string));
+  el.XSTRING (string).size = newsize;
+}
+
+
+
+
+/* A regular vector is just a header plus an array of Lisp_Objects.  */
+
+// struct Lisp_Vector
+//   {
+//     struct vectorlike_header header;
+//     Lisp_Object contents[FLEXIBLE_ARRAY_MEMBER];
+//   };
+
+// INLINE bool
+el.VECTORLIKEP = function VECTORLIKEP (/*Lisp_Object*/ x)
+{
+  return el.lisp_h_VECTORLIKEP (x);
+}
+
+// INLINE struct Lisp_Vector *
+el.XVECTOR = function XVECTOR (/*Lisp_Object*/ a)
+{
+  el.eassert (() => el.VECTORLIKEP (a));
+  return el.deref(a);
+}
+
+// INLINE ptrdiff_t
+el.ASIZE = function ASIZE (/*Lisp_Object*/ array)
+{
+  el.eassume (() => el.VECTORLIKEP(array));
+  let /*ptrdiff_t*/ size = el.XVECTOR (array).header.size; //->header.size;
+  el.eassume (() => 0 <= size);
+  return size;
+}
+
+// INLINE ptrdiff_t
+el.PVSIZE = function PVSIZE (/*Lisp_Object*/ pv)
+{
+  return el.ASIZE (pv) & el.PSEUDOVECTOR_SIZE_MASK;
+}
+
+// INLINE bool
+el.VECTORP = function VECTORP (/*Lisp_Object*/ x)
+{
+  return el.VECTORLIKEP (x) && ! (el.ASIZE (x) & el.PSEUDOVECTOR_FLAG);
+}
+
+// INLINE void
+el.CHECK_VECTOR = function CHECK_VECTOR (/*Lisp_Object*/ x)
+{
+  el.CHECK_TYPE (el.VECTORP (x), el.Qvectorp, x);
+}
+
+
+/* A pseudovector is like a vector, but has other non-Lisp components.  */
+
+// INLINE enum pvec_type
+el.PSEUDOVECTOR_TYPE = function PSEUDOVECTOR_TYPE (/* struct Lisp_Vector * */ v)
+{
+  let /*ptrdiff_t*/ size = v.header.size; //v->header.size;
+  return (size & el.PSEUDOVECTOR_FLAG
+          ? (size & el.PVEC_TYPE_MASK) >> el.PSEUDOVECTOR_AREA_BITS
+          : el.PVEC_NORMAL_VECTOR);
+}
+
+/* Can't be used with PVEC_NORMAL_VECTOR.  */
+// INLINE bool
+el.PSEUDOVECTOR_TYPEP = function PSEUDOVECTOR_TYPEP (/* struct vectorlike_header * */ a, /*enum pvec_type*/ code)
+{
+  /* We don't use PSEUDOVECTOR_TYPE here so as to avoid a shift
+   * operation when `code' is known.  */
+  return ((/*a->size*/ a.size & (el.PSEUDOVECTOR_FLAG | el.PVEC_TYPE_MASK))
+	  == (el.PSEUDOVECTOR_FLAG | (code << el.PSEUDOVECTOR_AREA_BITS)));
+}
+
+/* True if A is a pseudovector whose code is CODE.  */
+// INLINE bool
+el.PSEUDOVECTORP = function PSEUDOVECTORP (/*Lisp_Object*/ a, /*int*/ code)
+{
+  if (! el.VECTORLIKEP (a))
+    return false;
+  else
+    {
+      /* Converting to struct vectorlike_header * avoids aliasing issues.  */
+      // /* struct vectorlike_header * */h = el.XUNTAG (a, el.Lisp_Vectorlike);
+      /* struct vectorlike_header * */h = el.deref (a, el.Lisp_Vectorlike).header;
+      return el.PSEUDOVECTOR_TYPEP (h, code);
+    }
+}
+
+
+
+
+
+/***********************************************************************
+		       Pure Storage Management
+ ***********************************************************************/
+
+/* Allocate room for SIZE bytes from pure Lisp storage and return a
+   pointer to it.  TYPE is the Lisp type for which the memory is
+   allocated.  TYPE < 0 means it's not used for a Lisp object.  */
+
+// static void *
+el.pure_alloc = function pure_alloc (/*size_t*/ size, /*int*/ type = -1)
+{
+  if (type < 0) {
+    var buffer = new MutableBuffer(/* initialSize */ size, /* blockSize */ size / 4);
+    return buffer;
+  }
+  let ptr = el.make_lisp_ptr(null, type);
+  let obj = el.Lisp_Object(ptr);
+  return obj;
+
+  // void *result;
+
+ // again:
+  // if (type >= 0)
+  //   {
+  //     /* Allocate space for a Lisp object from the beginning of the free
+	 // space with taking account of alignment.  */
+  //     result = pointer_align (purebeg + pure_bytes_used_lisp, GCALIGNMENT);
+  //     pure_bytes_used_lisp = ((char *)result - (char *)purebeg) + size;
+  //   }
+  // else
+  //   {
+  //     /* Allocate space for a non-Lisp object from the end of the free
+	 // space.  */
+  //     pure_bytes_used_non_lisp += size;
+  //     result = purebeg + pure_size - pure_bytes_used_non_lisp;
+  //   }
+  // pure_bytes_used = pure_bytes_used_lisp + pure_bytes_used_non_lisp;
+
+  // if (pure_bytes_used <= pure_size)
+  //   return result;
+
+  // /* Don't allocate a large amount here,
+  //    because it might get mmap'd and then its address
+  //    might not be usable.  */
+  // purebeg = xmalloc (10000);
+  // pure_size = 10000;
+  // pure_bytes_used_before_overflow += pure_bytes_used - size;
+  // pure_bytes_used = 0;
+  // pure_bytes_used_lisp = pure_bytes_used_non_lisp = 0;
+  // goto again;
+}
+
+
+// #ifndef CANNOT_DUMP
+
+// /* Print a warning if PURESIZE is too small.  */
+
+// void
+// check_pure_size (void)
+// {
+//   if (pure_bytes_used_before_overflow)
+//     message (("emacs:0:Pure Lisp storage overflow (approx. %"pI"d"
+// 	      " bytes needed)"),
+// 	     pure_bytes_used + pure_bytes_used_before_overflow);
+// }
+// #endif
+
+
+
+
+/* Return a string allocated in pure space.  DATA is a buffer holding
+   NCHARS characters, and NBYTES bytes of string data.  MULTIBYTE
+   means make the result string multibyte.
+
+   Must get an error if pure storage is full, since if it cannot hold
+   a large string it may be able to hold conses that point to that
+   string; then the string is not protected from gc.  */
+
+// Lisp_Object
+el.make_pure_string = function make_pure_string (/* const char **/ data,
+		  /*ptrdiff_t*/ nchars, /*ptrdiff_t*/ nbytes, /*bool*/ multibyte)
+{
+  let /*Lisp_Object*/ string;
+  let /* struct Lisp_String * */ s = el.pure_alloc (1, el.Lisp_String);
+  s.data = /*(unsigned char *)*/ el.find_string_data_in_pure (data, nbytes);
+  if (s.data == el.NULL)
+    {
+      s.data = el.pure_alloc (nbytes + 1, -1);
+      el.memcpy (s.data, data, nbytes);
+      s.data[nbytes] = '\0';
+    }
+  s.size = nchars;
+  s.size_byte = multibyte ? nbytes : -1;
+  s.intervals = el.NULL;
+  el.XSETSTRING (string, s);
+  return string;
+}
+
+/* Return a string allocated in pure space.  Do not
+   allocate the string data, just point to DATA.  */
+
+// Lisp_Object
+el.make_pure_c_string = function make_pure_c_string (/* const char * */data, /*ptrdiff_t*/ nchars)
+{
+  let /* struct Lisp_String * */s = pure_alloc (1, el.Lisp_String);
+  s.size = nchars;
+  s.size_byte = -1;
+  s.data = /*(unsigned char *)*/ data;
+  s.intervals = el.NULL;
+  return s;
+}
+
+
+
+
 
 // _Noreturn void
 el.wrong_type_argument = function wrong_type_argument (/*register*/ /*Lisp_Object*/ predicate, /*register*/ /*Lisp_Object*/ value)
@@ -989,7 +1772,7 @@ See also the function \`condition-case'.  `,
   function Fsignal (/*Lisp_Object*/ error_symbol, /*Lisp_Object*/ data)
 {
   el.signal_or_quit (error_symbol, data, false);
-  el.eassume (false);
+  el.eassume (() => false);
 });
 
 
@@ -1213,8 +1996,8 @@ DEFUN ("cons", "Fcons", "Scons", 2, 2, 0,
     }
 
   // MALLOC_UNBLOCK_INPUT;
-  let i = el.cons_cells_consed = el.cons_cells_consed || 0;
-  val =  el.make_lisp_ptr(i, el.Lisp_Cons);
+  // let i = el.cons_cells_consed = el.cons_cells_consed || 0;
+  val =  el.make_lisp_ptr(null, el.Lisp_Cons);
 
   XSETCAR (val, car);
   XSETCDR (val, cdr);
@@ -1405,5 +2188,6 @@ INIT must be an integer that represents a character.  `},
 });
 
 
+require('./data')(el);
 
 }

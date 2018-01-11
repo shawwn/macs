@@ -8,6 +8,7 @@
   "dependencies": {
     "change-case": "^3.0.1",
     "mout": "^1.1.0",
+    "mutable-buffer": "^2.0.3",
     "node-c-parser": "^1.0.11"
   },
   "devDependencies": {

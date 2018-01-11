@@ -2393,6 +2393,7 @@ module.exports = function (el) {
     function builtin_lisp_symbol(sybolic, i) {
       let name = el.defsym_name[i];
       el[`i${sybolic}`] = i;
+      el[`iQ_MAX`] = i+1;
       let sym = el.make_symbol(name);
       sym.index = i;
       el.heap[el.Lisp_Symbol][i] = sym;

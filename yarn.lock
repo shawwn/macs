@@ -1360,6 +1360,10 @@ ms@2.0.0:
   version "2.0.0"
   resolved "https://registry.yarnpkg.com/ms/-/ms-2.0.0.tgz#5608aeadfc00be6c2901df5f9861788de0d597c8"
 
+mutable-buffer@^2.0.3:
+  version "2.0.3"
+  resolved "https://registry.yarnpkg.com/mutable-buffer/-/mutable-buffer-2.0.3.tgz#67bca5568bf15d3f6035fb716e3899dc44901c8c"
+
 nan@^2.3.0:
   version "2.8.0"
   resolved "https://registry.yarnpkg.com/nan/-/nan-2.8.0.tgz#ed715f3fe9de02b57a5e6252d90a96675e1f085a"
