@@ -4,5 +4,8 @@
   "main": "index.js",
   "repository": "https://github.com/shawwn/macs",
   "author": "Shawn Presser <shawnpresser@gmail.com>",
-  "license": "MIT"
+  "license": "MIT",
+  "dependencies": {
+    "mout": "^1.1.0"
+  }
 }
