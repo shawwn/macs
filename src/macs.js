@@ -15,6 +15,8 @@ if (!G.hasOwnProperty('el')) {
   el = ns('el');
 }
 
+with_init(el);
+
   
 // #if CHECK_LISP_OBJECT_TYPE
 // # define lisp_h_XLI(o) ((o).i)
@@ -36,10 +38,10 @@ if (!G.hasOwnProperty('el')) {
 // #define lisp_h_MISCP(x) (XTYPE (x) === Lisp_Misc)
 // #define lisp_h_NILP(x) EQ (x, Qnil)
 // #define lisp_h_SET_SYMBOL_VAL(sym, v) \
-  //  (eassert ((sym)->redirect === SYMBOL_PLAINVAL), (sym)->val.value = (v))
+  //  (eassert ((sym)->redirect === SYMBOL_PLAINVAL), (sym)->value = (v))
 // #define lisp_h_SYMBOL_CONSTANT_P(sym) (XSYMBOL (sym)->constant)
 // #define lisp_h_SYMBOL_VAL(sym) \
-  //  (eassert ((sym)->redirect === SYMBOL_PLAINVAL), (sym)->val.value)
+  //  (eassert ((sym)->redirect === SYMBOL_PLAINVAL), (sym)->value)
 // #define lisp_h_SYMBOLP(x) (XTYPE (x) === Lisp_Symbol)
 // #define lisp_h_VECTORLIKEP(x) (XTYPE (x) === Lisp_Vectorlike)
 // #define lisp_h_XCAR(c) XCONS (c)->car
@@ -191,8 +193,12 @@ Object.assign(el, el.Lisp_Type);
 
   el.eassert = function eassert(cond, name) {
     if (!cond()) {
-      console.error("assertion failed: " + cond.toString());
-      process.exit(1);
+      if (true) {
+        throw new Error("assertion failed: " + cond.toString());
+      } else {
+        console.error("assertion failed: " + cond.toString());
+        process.exit(1);
+      }
     }
   }
   el.eassume = el.eassert;
@@ -212,19 +218,24 @@ Object.assign(el, el.Lisp_Type);
 
   el.SYMS = [];
 
-  el.make_symbol = function make_symbol(name, idx) {
-    // if (idx === null) {
-    //   idx = el.SYMS.length;
-    // }
-    let sym = {type: el.KEY("symbol"), name: name, plist: {}}
-    if (idx != null) {
-      el.SYMS[idx] = sym;
-    }
-    return sym;
-  }
+  // el.make_symbol = function make_symbol(name, idx) {
+  //   // if (idx === null) {
+  //   //   idx = el.SYMS.length;
+  //   // }
+  //   let sym = {type: el.KEY("symbol"), name: name, plist: {}}
+  //   if (idx != null) {
+  //     el.SYMS[idx] = sym;
+  //   }
+  //   return sym;
+  // }
 
   el.DEFSYM = function defsym(sym, name) {
-    el[sym] = el.make_symbol(name);
+    // el[sym] = el.make_symbol(name);
+    // let sym = el.lisp_obj(null, el.Lisp_Symbol);
+    // // el.heap[el.Lisp_Symbol][i] = sym;
+    // el[sybolic] = sym;
+    // el.lispsym[i] = sym;
+    return el.define_symbol(sym, name);
   }
 
   el.DEFUN2 = function defun(f) {
@@ -244,18 +255,36 @@ Object.assign(el, el.Lisp_Type);
   //  Lisp_Object fnname
 // #endif
 
-  el.DEFUN = function defun(lname, fnname, sname, minargs, maxargs, intspec, attrs, subr) {
+  el.DEFUN = function defun(lname, fnname, sname, minargs, maxargs, intspec, attrs, fsubr) {
     if (typeof attrs === 'string') {
       attrs = {doc: attrs}
     }
-    el[fnname] = subr;
-    el[sname] = Object.assign({}, {minargs, maxargs, intspec, fnname, lname, ['a'+maxargs]: subr}, attrs);
+    let subr = el.XSETPVECTYPE(null, el.PVEC_SUBR);
+    Object.assign(subr, {minargs, maxargs, intspec, fnname, lname, ['a'+maxargs]: fsubr}, attrs);
+    el[sname] = subr;
+    el[fnname] = fsubr;
   }
 
-  with_init(el);
-  el_globals(el);
-  syms_of_data(el);
-  return el;
+  el.defsubr = function defsubr (/*struct Lisp_Subr * */ sname) {
+    let /*Lisp_Object*/ sym, tem;
+    console.log(sname);
+    sym = el.intern_c_string (sname.lname);
+    el.XSETPVECTYPE (sname, el.PVEC_SUBR);
+    el.XSETSUBR (tem, sname);
+    el.set_symbol_function (sym, tem);
+  }
+  
+  // INLINE Lisp_Object
+  el.intern = function intern (/* const char * */str)
+  {
+    return el.intern_1 (str, el.strlen (str));
+  }
+
+  // INLINE Lisp_Object
+  el.intern_c_string = function intern_c_string (/* const char * */str)
+  {
+    return el.intern_c_string_1 (str, el.strlen (str));
+  }
 }
 
 function with_init(el) {
@@ -330,6 +359,10 @@ function with_init(el) {
         el.XUNTAG = function XUNTAG (a, type) { return el.lisp_h_XUNTAG (a, type); }
       }
     }
+    prn = function (x) {
+      console.log(x);
+      return x;
+    }
 
 
     // el.lisp_h_XLI = function lisp_h_XLI(o) { return (o.index != null) ? o.index : o; }
@@ -350,11 +383,15 @@ function with_init(el) {
     el.lisp_h_MISCP = function lisp_h_MISCP(x) { return (XTYPE (x) === Lisp_Misc); }
     el.lisp_h_NILP = function lisp_h_NILP(x) { return EQ (x, Qnil); }
     el.lisp_h_SET_SYMBOL_VAL = function lisp_h_SET_SYMBOL_VAL(sym, v) {
-       return eassert (() => (sym)["->redirect"] === SYMBOL_PLAINVAL), (sym)["->val"].value = (v)
+       eassert (() => true
+           // el.deref((sym)).redirect === SYMBOL_PLAINVAL
+           );
+       el.deref(sym).value = v;
+       return sym;
     }
     el.lisp_h_SYMBOL_CONSTANT_P = function lisp_h_SYMBOL_CONSTANT_P(sym) { return (XSYMBOL (sym)["->constant"]); }
     el.lisp_h_SYMBOL_VAL = function lisp_h_SYMBOL_VAL(sym) { 
-      return (eassert (() => (sym)["->redirect"] === SYMBOL_PLAINVAL), (sym)["->val"].value); }
+      return (eassert (() => el.deref(sym).redirect === SYMBOL_PLAINVAL), (sym)["->val"].value); }
     el.lisp_h_SYMBOLP = function lisp_h_SYMBOLP(x) { return (XTYPE (x) === Lisp_Symbol); }
     el.lisp_h_VECTORLIKEP = function lisp_h_VECTORLIKEP(x) { return (XTYPE (x) === Lisp_Vectorlike); }
     // el.lisp_h_XCAR = function lisp_h_XCAR(c) { return XCONS (c)["->car"]; }
@@ -380,8 +417,9 @@ function with_init(el) {
       el.lisp_h_XINT = function lisp_h_XINT(a) { return (XLI (a) >> INTTYPEBITS) }
       el.lisp_h_XSYMBOL = function lisp_h_XSYMBOL(a) {
         return (eassert (() => SYMBOLP (a)), 
-            /*(struct Lisp_Symbol *)*/ (/*(uintptr_t)*/ XLI (a) - Lisp_Symbol 
-              + /*(char *)*/ lispsym))
+            // /*(struct Lisp_Symbol *)*/ (/*(uintptr_t)*/ XLI (a) - Lisp_Symbol 
+            //   + /*(char *)*/ lispsym))
+        el.deref(a))
       }
       el.lisp_h_XTYPE = function lisp_h_XTYPE(a) { return (/*(enum Lisp_Type)*/ (XLI (a) & ~VALMASK)) }
       el.lisp_h_XUNTAG = function lisp_h_XUNTAG(a, type) { return (/*(void *)*/ /*(intptr_t)*/ (XLI (a) - (type))) }
@@ -513,9 +551,11 @@ el.Lisp_Object = function Lisp_Object(ptr) {
 
 /* Construct a Lisp_Object from a value or address.  */
 
-el.type_counts = {}
+el.type_counts = el.type_counts || {}
+el.counts = el.counts || 0
 
 el.next_index = function next_index(type, count = 1) {
+  return el.counts += count;
   let i = el.type_counts[type]||0;
   if (type === el.Lisp_Symbol && i < el.iQ_MAX) {
     i = el.iQ_MAX;
@@ -556,6 +596,84 @@ if (!el.env.USE_LSB_TAG) {
 }
 
 
+
+/* Interned state of a symbol.  */
+
+el.symbol_interned =
+{
+  SYMBOL_UNINTERNED: 0,
+  SYMBOL_INTERNED: 1,
+  SYMBOL_INTERNED_IN_INITIAL_OBARRAY: 2
+};
+Object.assign(el, el.symbol_interned);
+
+el.symbol_redirect =
+{
+  SYMBOL_PLAINVAL : 4,
+  SYMBOL_VARALIAS : 1,
+  SYMBOL_LOCALIZED: 2,
+  SYMBOL_FORWARDED: 3
+};
+Object.assign(el, el.symbol_redirect);
+
+el.symbol_trapped_write =
+{
+  SYMBOL_UNTRAPPED_WRITE: 0,
+  SYMBOL_NOWRITE: 1,
+  SYMBOL_TRAPPED_WRITE: 2
+};
+Object.assign(el, el.symbol_trapped_write);
+
+// struct Lisp_Symbol
+// {
+//   bool_bf gcmarkbit : 1;
+
+//   /* Indicates where the value can be found:
+//      0 : it's a plain var, the value is in the `value' field.
+//      1 : it's a varalias, the value is really in the `alias' symbol.
+//      2 : it's a localized var, the value is in the `blv' object.
+//      3 : it's a forwarding variable, the value is in `forward'.  */
+//   ENUM_BF (symbol_redirect) redirect : 3;
+
+//   /* 0 : normal case, just set the value
+//      1 : constant, cannot set, e.g. nil, t, :keywords.
+//      2 : trap the write, call watcher functions.  */
+//   ENUM_BF (symbol_trapped_write) trapped_write : 2;
+
+//   /* Interned state of the symbol.  This is an enumerator from
+//      enum symbol_interned.  */
+//   unsigned interned : 2;
+
+//   /* True means that this variable has been explicitly declared
+//      special (with `defvar' etc), and shouldn't be lexically bound.  */
+//   bool_bf declared_special : 1;
+
+//   /* True if pointed to from purespace and hence can't be GC'd.  */
+//   bool_bf pinned : 1;
+
+//   /* The symbol's name, as a Lisp string.  */
+//   Lisp_Object name;
+
+//   /* Value of the symbol or Qunbound if unbound.  Which alternative of the
+//      union is used depends on the `redirect' field above.  */
+//   union {
+//     Lisp_Object value;
+//     struct Lisp_Symbol *alias;
+//     struct Lisp_Buffer_Local_Value *blv;
+//     union Lisp_Fwd *fwd;
+//   } val;
+
+//   /* Function value of the symbol or Qnil if not fboundp.  */
+//   Lisp_Object function;
+
+//   /* The symbol's property list.  */
+//   Lisp_Object plist;
+
+//   /* Next symbol in obarray bucket, if the symbol is interned.  */
+//   struct Lisp_Symbol *next;
+// };
+
+
 
 
 // INLINE bool
@@ -570,25 +688,29 @@ el.XSYMBOL = function XSYMBOL (/*Lisp_Object*/ a)
   if (el.env.USE_LSB_TAG) {
     return el.lisp_h_XSYMBOL (a);
   } else {
+    // prn(a);
     el.eassert (() => el.SYMBOLP (a));
-    let /*intptr_t*/ i = /*(intptr_t)*/ el.XUNTAG (a, el.Lisp_Symbol);
-    let /* void * */ p = /*(char *)*/ el.lispsym + i;
-    return p;
+    // let /*intptr_t*/ i = /*(intptr_t)*/ el.XUNTAG (a, el.Lisp_Symbol);
+    // let /* void * */ p = /*(char *)*/ el.lispsym + i;
+    // return p;
+    return el.deref(a);
   }
 }
 
 // INLINE Lisp_Object
-el.make_lisp_symbol = function make_lisp_symbol(/* Lisp_Symbol * */ sym)
+el.make_lisp_symbol = function make_lisp_symbol(offset)
 {
-  let /*Lisp_Object*/ a = el.XIL (el.TAG_SYMOFFSET (/*(char *)*/ sym - /*(char *)*/ el.lispsym));
-  el.eassert (() => el.XSYMBOL (a) === sym);
+  // let /*Lisp_Object*/ a = el.XIL (el.TAG_SYMOFFSET (/*(char *)*/ sym - /*(char *)*/ el.lispsym));
+  let a = el.XIL (el.TAG_SYMOFFSET(offset))
+    console.log(a);
+  // el.eassert (() => el.XSYMBOL (a).index === offset);
   return a;
 }
 
 // INLINE Lisp_Object
 el.builtin_lisp_symbol = function builtin_lisp_symbol(/*int*/ index)
 {
-  return el.make_lisp_symbol (el.lispsym + index);
+  return el.make_lisp_symbol (index);
 }
 
 // INLINE void
@@ -1600,7 +1722,7 @@ el.make_pure_string = function make_pure_string (/* const char **/ data,
    allocate the string data, just point to DATA.  */
 
 // Lisp_Object
-el.make_pure_c_string = function make_pure_c_string (/* const char * */data, /*ptrdiff_t*/ nchars)
+el.make_pure_c_string = function make_pure_c_string (/* const char * */data, /*ptrdiff_t*/ nchars = data.length)
 {
   let /* struct Lisp_String * */s = pure_alloc (1, el.Lisp_String);
   s.size = nchars;
@@ -1689,8 +1811,37 @@ el.signal_error = function signal_error (/* const char * */ s, /*Lisp_Object*/ a
 }
 
 
+  el_globals(el);
+
+  require('./lread')(el);
+  require('./data')(el);
+
+  return el;
 
   }
+}
+
+function syms_of_alloc(el) {
+  el.defsubr (el.Scons);
+  el.defsubr (el.Slist);
+  el.defsubr (el.Svector);
+  el.defsubr (el.Srecord);
+  el.defsubr (el.Sbool_vector);
+  el.defsubr (el.Smake_byte_code);
+  el.defsubr (el.Smake_list);
+  el.defsubr (el.Smake_vector);
+  el.defsubr (el.Smake_record);
+  el.defsubr (el.Smake_string);
+  el.defsubr (el.Smake_bool_vector);
+  el.defsubr (el.Smake_symbol);
+  el.defsubr (el.Smake_marker);
+  el.defsubr (el.Smake_finalizer);
+  el.defsubr (el.Spurecopy);
+  el.defsubr (el.Sgarbage_collect);
+  el.defsubr (el.Smemory_limit);
+  el.defsubr (el.Smemory_info);
+  el.defsubr (el.Smemory_use_counts);
+  el.defsubr (el.Ssuspicious_object);
 }
 
 function syms_of_data(el) {
@@ -1733,24 +1884,24 @@ function syms_of_data(el) {
 
 with (el) {
 
-  DEFUN2(function intern(name) {
-    return INTERN(name);
-  });
+//   DEFUN2(function intern(name) {
+//     return INTERN(name);
+//   });
 
-  DEFUN2(function fboundp(name) {
-    return F.hasOwnProperty(name);
-  });
+//   DEFUN2(function fboundp(name) {
+//     return F.hasOwnProperty(name);
+//   });
 
-  DEFUN2(function signal(name, data) {
-    let err = new Error(name);
-    err.data = data;
-    throw err;
-  });
+//   DEFUN2(function signal(name, data) {
+//     let err = new Error(name);
+//     err.data = data;
+//     throw err;
+//   });
 
-  DEFUN2(function symbol_function(name) {
-    if (!Ffboundp(name)) {
-    }
-  });
+//   DEFUN2(function symbol_function(name) {
+//     if (!Ffboundp(name)) {
+//     }
+//   });
 
 
   
@@ -1794,7 +1945,12 @@ el.signal_or_quit = function signal_or_quit (/*Lisp_Object*/ error_symbol, /*Lis
   console.log(error_symbol);
   console.log(el.Lisp_Object(data));
   console.log(el.Lisp_Object(el.XCDR(data)));
-  throw new Error(x.name);
+    console.log("")
+    console.log("")
+    console.log("")
+    let name = el.defsym_name[el.deref(error_symbol).index]
+  console.log(name)
+  throw new Error(name);
   // /* When memory is full, ERROR-SYMBOL is nil,
   //    and DATA is (REAL-ERROR-SYMBOL . REAL-DATA).
   //    That is a special case--don't do this in other situations.  */
@@ -1921,6 +2077,62 @@ DEFUN ("eq", "Feq", "Seq", 2, 2, 0,
       return Qt;
     return Qnil;
   })
+
+
+/* Use these functions to set Lisp_Object
+   or pointer slots of struct Lisp_Symbol.  */
+
+// INLINE void
+el.set_symbol_function = function set_symbol_function (/*Lisp_Object*/ sym, /*Lisp_Object*/ _function)
+{
+  el.XSYMBOL (sym).function = _function;
+}
+
+// INLINE void
+el.set_symbol_plist = function set_symbol_plist (/*Lisp_Object*/ sym, /*Lisp_Object*/ plist)
+{
+  el.XSYMBOL (sym).plist = plist;
+}
+
+// INLINE void
+el.set_symbol_next = function set_symbol_next (/*Lisp_Object*/ sym, /* struct Lisp_Symbol * */next)
+{
+  el.XSYMBOL (sym).next = next;
+}
+
+// INLINE void
+el.make_symbol_constant = function make_symbol_constant (/*Lisp_Object*/ sym)
+{
+  el.XSYMBOL (sym).trapped_write = SYMBOL_NOWRITE;
+}
+
+
+
+// static void
+el.set_symbol_name = function set_symbol_name (/*Lisp_Object*/ sym, /*Lisp_Object*/ name)
+{
+  el.XSYMBOL (sym).name = name;
+}
+
+// void
+el.init_symbol = function init_symbol (/*Lisp_Object*/ sym, /*Lisp_Object*/ name)
+{
+  let str = el.deref(name);
+  let /* struct Lisp_Symbol * */ p = el.XSYMBOL (sym);
+  // prn(['init_symbol', str, p, el.SYMBOLP(p), el.XSYMBOL.toString()])
+  el.set_symbol_name (sym, str);
+  el.set_symbol_plist (sym, el.Qnil);
+  p.redirect = el.SYMBOL_PLAINsym;
+  el.SET_SYMBOL_VAL (p, el.Qunbound);
+  el.set_symbol_function (sym, el.Qnil);
+  el.set_symbol_next (sym, el.NULL);
+  p.gcmarkbit = false;
+  p.interned = el.SYMBOL_UNINTERNED;
+  p.trapped_write = el.SYMBOL_UNTRAPPED_WRITE;
+  p.declared_special = false;
+  p.pinned = false;
+}
+
 
 DEFUN ("make-symbol", "Fmake_symbol", "Smake_symbol", 1, 1, 0,
     {doc: ` Return a newly allocated uninterned symbol whose name is NAME.
@@ -2188,6 +2400,35 @@ INIT must be an integer that represents a character.  `},
 });
 
 
-require('./data')(el);
+DEFUN ("make-vector", "Fmake_vector", "Smake_vector", 2, 2, 0,
+    {doc: ` Return a newly created vector of length LENGTH, with each element being INIT.
+See also the function \`vector'.  `},
+  function (/*Lisp_Object*/ length, /*Lisp_Object*/ init)
+{
+  el.CHECK_NATNUM (length);
+  let /*struct Lisp_Vector * */p = el.allocate_vector (el.XFASTINT (length));
+  for (let /*ptrdiff_t*/ i = 0; i < el.XFASTINT (length); i++)
+    // p->contents[i] = init;
+    p.contents[i] = init;
+  return el.make_lisp_ptr (p, el.Lisp_Vectorlike);
+});
+
+DEFUN ("vector", "Fvector", "Svector", 0, MANY, 0,
+    {doc: ` Return a newly created vector with specified arguments as elements.
+Any number of arguments, even zero arguments, are allowed.
+usage: (vector &rest OBJECTS)  `},
+  function Fveector (/*ptrdiff_t*/ nargs, /*Lisp_Object* */ args)
+{
+  /*Lisp_Object*/ val = el.make_uninit_vector (nargs);
+  /* struct Lisp_Vector * */p = el.XVECTOR (val);
+  // el.memcpy (p->contents, args, nargs * sizeof *args);
+  el.memcpy (p.contents, args, nargs * el.len(args));
+  return val;
+})
+
+el.init_obarray()
+syms_of_alloc(el);
+syms_of_data(el);
+el.init_obarray();
 
 }

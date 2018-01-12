@@ -2391,13 +2391,18 @@ module.exports = function (el) {
       ]
 
     function builtin_lisp_symbol(sybolic, i) {
-      let name = el.defsym_name[i];
-      el[`i${sybolic}`] = i;
-      el[`iQ_MAX`] = i+1;
-      let sym = el.make_symbol(name);
-      sym.index = i;
-      el.heap[el.Lisp_Symbol][i] = sym;
-      el[sybolic] = sym;
+      let sym = el.lispsym[i];
+      if (!sym) {
+        let name = el.defsym_name[i];
+        el[`i${sybolic}`] = i;
+        el[`iQ_MAX`] = i+1;
+        // let sym = el.Fmake_symbol(name);
+        let sym = el.lisp_obj(i, el.Lisp_Symbol);
+        // el.heap[el.Lisp_Symbol][i] = sym;
+        el[sybolic] = sym;
+        el.lispsym[i] = sym;
+      }
+      return sym;
     }
 
     builtin_lisp_symbol("Qnil",0)
